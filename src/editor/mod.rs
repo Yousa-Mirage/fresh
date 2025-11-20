@@ -45,8 +45,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 // Re-export BufferId from event module for backward compatibility
-pub use crate::event::BufferId;
 pub use self::types::{BufferKind, BufferMetadata, HoverTarget};
+pub use crate::event::BufferId;
 
 /// Helper function to convert lsp_types::Uri to PathBuf
 fn uri_to_path(uri: &lsp_types::Uri) -> Result<PathBuf, String> {
@@ -674,18 +674,13 @@ impl Editor {
             self.working_dir.join(input_path)
         };
 
-        let canonical = resolved
-            .canonicalize()
-            .unwrap_or_else(|_| resolved.clone());
+        let canonical = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
 
         let parsed = crate::ansi_background::AnsiBackground::from_file(&canonical)?;
 
         self.ansi_background = Some(parsed);
         self.ansi_background_path = Some(canonical.clone());
-        self.set_status_message(format!(
-            "Background set to {}",
-            canonical.display()
-        ));
+        self.set_status_message(format!("Background set to {}", canonical.display()));
 
         Ok(())
     }
@@ -2652,6 +2647,17 @@ impl Editor {
                         stderr.len()
                     );
                 }
+                AsyncMessage::PluginLspResponse {
+                    language: _,
+                    request_id,
+                    result,
+                } => {
+                    tracing::debug!("Received plugin LSP response (request_id={})", request_id);
+                    self.send_plugin_response(crate::plugin_api::PluginResponse::LspRequest {
+                        request_id,
+                        result,
+                    });
+                }
                 AsyncMessage::LspProgress {
                     language,
                     token,
@@ -3935,6 +3941,32 @@ impl Editor {
                     Err(e) => {
                         tracing::warn!("Failed to close split {:?}: {}", split_id, e);
                     }
+                }
+            }
+            PluginCommand::SendLspRequest {
+                language,
+                method,
+                params,
+                request_id,
+            } => {
+                let error = if let Some(lsp) = self.lsp.as_mut() {
+                    if let Some(handle) = lsp.get_or_spawn(&language) {
+                        if let Err(e) = handle.send_plugin_request(request_id, method, params) {
+                            Some(e)
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some(format!("LSP server for '{}' is unavailable", language))
+                    }
+                } else {
+                    Some("LSP manager not initialized".to_string())
+                };
+                if let Some(err_msg) = error {
+                    self.send_plugin_response(crate::plugin_api::PluginResponse::LspRequest {
+                        request_id,
+                        result: Err(err_msg),
+                    });
                 }
             }
         }
@@ -5536,7 +5568,6 @@ impl Editor {
             self.status_message = Some("Cannot rename in unsaved buffer".to_string());
         }
     }
-
 }
 
 /// Parse a key string like "RET", "C-n", "M-x", "q" into KeyCode and KeyModifiers

@@ -14,6 +14,7 @@ use crate::file_tree::{FileTreeView, NodeId};
 use lsp_types::{
     CodeActionOrCommand, CompletionItem, Diagnostic, InlayHint, Location, SignatureHelp,
 };
+use serde_json::Value;
 use std::sync::mpsc;
 
 /// Messages sent from async tasks to the synchronous main loop
@@ -159,6 +160,12 @@ pub enum AsyncMessage {
     LspStatusUpdate {
         language: String,
         status: LspServerStatus,
+    },
+    /// Response for a plugin-initiated LSP request
+    PluginLspResponse {
+        language: String,
+        request_id: u64,
+        result: Result<Value, String>,
     },
 }
 

@@ -224,6 +224,7 @@ impl PluginThreadHandle {
             crate::plugin_api::PluginResponse::VirtualBufferCreated { request_id, .. } => {
                 *request_id
             }
+            crate::plugin_api::PluginResponse::LspRequest { request_id, .. } => *request_id,
         };
 
         tracing::trace!("deliver_response: request_id={}", request_id);

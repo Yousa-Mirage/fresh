@@ -7,6 +7,7 @@ use crate::command_registry::CommandRegistry;
 use crate::commands::Command;
 use crate::event::{BufferId, SplitId};
 use crate::hooks::{HookCallback, HookRegistry};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -19,6 +20,11 @@ pub enum PluginResponse {
     VirtualBufferCreated {
         request_id: u64,
         buffer_id: BufferId,
+    },
+    /// Response to a plugin-initiated LSP request
+    LspRequest {
+        request_id: u64,
+        result: Result<Value, String>,
     },
 }
 
@@ -351,6 +357,14 @@ pub enum PluginCommand {
 
     /// Close a split (if not the last one)
     CloseSplit { split_id: SplitId },
+
+    /// Send an arbitrary LSP request and return the raw JSON response
+    SendLspRequest {
+        language: String,
+        method: String,
+        params: Option<Value>,
+        request_id: u64,
+    },
 }
 
 /// Plugin API context - provides safe access to editor functionality

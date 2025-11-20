@@ -320,6 +320,13 @@ enum LspCommand {
         request_id: u64,
     },
 
+    /// Custom request initiated by a plugin
+    PluginRequest {
+        request_id: u64,
+        method: String,
+        params: Option<Value>,
+    },
+
     /// Shutdown the server
     Shutdown,
 }
@@ -1324,6 +1331,30 @@ impl LspState {
         }
     }
 
+    /// Handle a plugin-initiated request by forwarding it to the server
+    async fn handle_plugin_request(
+        &mut self,
+        request_id: u64,
+        method: String,
+        params: Option<Value>,
+        pending: &Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>,
+    ) {
+        let result = self
+            .send_request_sequential_tracked::<Value, Value>(
+                &method,
+                params,
+                pending,
+                Some(request_id),
+            )
+            .await;
+
+        let _ = self.async_tx.send(AsyncMessage::PluginLspResponse {
+            language: self.language.clone(),
+            request_id,
+            result,
+        });
+    }
+
     /// Handle shutdown command
     async fn handle_shutdown(&mut self) -> Result<(), String> {
         tracing::info!("Shutting down async LSP server");
@@ -1937,6 +1968,37 @@ impl LspTask {
                                 request_id
                             );
                             let _ = state.handle_cancel_request(request_id).await;
+                        }
+                        LspCommand::PluginRequest {
+                            request_id,
+                            method,
+                            params,
+                        } => {
+                            if state.initialized {
+                                tracing::debug!(
+                                    "Processing plugin request {} ({})",
+                                    request_id,
+                                    method
+                                );
+                                let _ = state
+                                    .handle_plugin_request(
+                                        request_id,
+                                        method,
+                                        params,
+                                        &pending,
+                                    )
+                                    .await;
+                            } else {
+                                tracing::debug!(
+                                    "Plugin LSP request {} received before initialization",
+                                    request_id
+                                );
+                                let _ = state.async_tx.send(AsyncMessage::PluginLspResponse {
+                                    language: language_clone.clone(),
+                                    request_id,
+                                    result: Err("LSP not initialized".to_string()),
+                                });
+                            }
                         }
                         LspCommand::Shutdown => {
                             tracing::info!("Processing Shutdown command");
@@ -3248,6 +3310,22 @@ impl LspHandle {
         self.command_tx
             .try_send(LspCommand::CancelRequest { request_id })
             .map_err(|_| "Failed to send cancel_request command".to_string())
+    }
+
+    /// Send a custom LSP request initiated by a plugin
+    pub fn send_plugin_request(
+        &self,
+        request_id: u64,
+        method: String,
+        params: Option<Value>,
+    ) -> Result<(), String> {
+        self.command_tx
+            .try_send(LspCommand::PluginRequest {
+                request_id,
+                method,
+                params,
+            })
+            .map_err(|_| "Failed to send plugin LSP request".to_string())
     }
 
     /// Shutdown the server

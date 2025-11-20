@@ -194,6 +194,24 @@ globalThis.run_tests = async function(): Promise<void> {
 };
 ```
 
+### Invoking LSP Requests
+
+Plugins can call `editor.sendLspRequest(language, method, params)` to run language-server-specific RPCs (clangd extensions, type hierarchy, switch header, etc.). Provide the target language ID (e.g., `"cpp"`) and the full method name, and handle the raw JSON response yourself.
+
+```typescript
+globalThis.switch_header = async function(): Promise<void> {
+  const bufferId = editor.getActiveBufferId();
+  const path = editor.getBufferPath(bufferId);
+  const uri = `file://${path}`;
+  const result = await editor.sendLspRequest("cpp", "textDocument/switchSourceHeader", {
+    textDocument: { uri }
+  });
+  if (result && typeof result === "string") {
+    editor.openFile(result, 0, 0);
+  }
+};
+```
+
 ### File System Operations
 
 Read and write files, check paths:

@@ -1535,6 +1535,9 @@ async fn op_fresh_create_virtual_buffer_in_split(
         crate::plugin_api::PluginResponse::VirtualBufferCreated { buffer_id, .. } => {
             Ok(buffer_id.0 as u32)
         }
+        _ => Err(deno_core::error::generic_error(
+            "Unexpected plugin response for virtual buffer creation",
+        )),
     }
 }
 
@@ -1631,6 +1634,77 @@ async fn op_fresh_create_virtual_buffer_in_existing_split(
         crate::plugin_api::PluginResponse::VirtualBufferCreated { buffer_id, .. } => {
             Ok(buffer_id.0 as u32)
         }
+        _ => Err(deno_core::error::generic_error(
+            "Unexpected plugin response for virtual buffer creation",
+        )),
+    }
+}
+
+/// Send an arbitrary LSP request and receive the raw JSON response
+/// @param language - Language ID (e.g., "cpp")
+/// @param method - Full LSP method (e.g., "textDocument/switchSourceHeader")
+/// @param params - Optional request payload
+/// @returns Promise resolving to the JSON response value
+#[op2(async)]
+#[serde]
+async fn op_fresh_send_lsp_request(
+    state: Rc<RefCell<OpState>>,
+    #[string] language: String,
+    #[string] method: String,
+    #[serde] params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    let receiver = {
+        let state = state.borrow();
+        let runtime_state = state
+            .try_borrow::<Rc<RefCell<TsRuntimeState>>>()
+            .ok_or_else(|| deno_core::error::generic_error("Failed to get runtime state"))?;
+        let runtime_state = runtime_state.borrow();
+
+        let request_id = {
+            let mut id = runtime_state.next_request_id.borrow_mut();
+            let current = *id;
+            *id += 1;
+            current
+        };
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut pending = runtime_state.pending_responses.lock().unwrap();
+            pending.insert(request_id, tx);
+        }
+
+        if runtime_state
+            .command_sender
+            .send(crate::plugin_api::PluginCommand::SendLspRequest {
+                language,
+                method,
+                params,
+                request_id,
+            })
+            .is_err()
+        {
+            let mut pending = runtime_state.pending_responses.lock().unwrap();
+            pending.remove(&request_id);
+            return Err(deno_core::error::generic_error(
+                "Failed to send plugin LSP request",
+            ));
+        }
+
+        rx
+    };
+
+    let response = receiver
+        .await
+        .map_err(|_| deno_core::error::generic_error("Plugin LSP request cancelled"))?;
+
+    match response {
+        crate::plugin_api::PluginResponse::LspRequest { result, .. } => match result {
+            Ok(value) => Ok(value),
+            Err(err) => Err(deno_core::error::generic_error(err)),
+        },
+        _ => Err(deno_core::error::generic_error(
+            "Unexpected plugin response for LSP request",
+        )),
     }
 }
 
@@ -1886,6 +1960,7 @@ extension!(
         // Virtual buffer operations
         op_fresh_create_virtual_buffer_in_split,
         op_fresh_create_virtual_buffer_in_existing_split,
+        op_fresh_send_lsp_request,
         op_fresh_define_mode,
         op_fresh_show_buffer,
         op_fresh_close_buffer,
@@ -2092,6 +2167,9 @@ impl TypeScriptRuntime {
                     spawnProcess(command, args = [], cwd = null) {
                         return core.ops.op_fresh_spawn_process(command, args, cwd);
                     },
+                    sendLspRequest(language, method, params = null) {
+                        return core.ops.op_fresh_send_lsp_request(language, method, params);
+                    },
 
                     // File system operations
                     readFile(path) {
@@ -2216,6 +2294,7 @@ impl TypeScriptRuntime {
             crate::plugin_api::PluginResponse::VirtualBufferCreated { request_id, .. } => {
                 *request_id
             }
+            crate::plugin_api::PluginResponse::LspRequest { request_id, .. } => *request_id,
         };
 
         let sender = {
