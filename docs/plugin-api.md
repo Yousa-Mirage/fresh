@@ -154,6 +154,19 @@ interface PromptSuggestion {
   disabled?: boolean | null;
   keybinding?: string | null;
 }
+
+### View Transform Hints
+
+Plugins can optionally provide layout hints for Compose rendering. These hints adjust layout only; they do not modify buffer text.
+
+```typescript
+interface LayoutHints {
+  compose_width?: number;    // column width; omit to use viewport width
+  column_guides?: number[];  // optional column offsets for aligned tables
+}
+```
+
+Use `editor.submitViewTransform(bufferId, start, end, layoutHints)` to set hints for the current viewport.
 ```
 
 | Field | Description |
@@ -531,6 +544,23 @@ deleteRange(buffer_id: number, start: number, end: number): boolean
 | `buffer_id` | `number` | Target buffer ID |
 | `start` | `number` | Start byte offset (inclusive) |
 | `end` | `number` | End byte offset (exclusive) |
+
+#### `submitViewTransform`
+
+Submit a transformed view stream for a viewport
+
+```typescript
+submitViewTransform(buffer_id: number, start: number, end: number, layout_hints?: LayoutHints | null): boolean
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `buffer_id` | `number` | Buffer to apply the transform to |
+| `start` | `number` | Viewport start byte |
+| `end` | `number` | Viewport end byte |
+| `layout_hints` | `LayoutHints | null` (optional) | Optional layout hints (compose width, column guides) |
 
 #### `insertAtCursor`
 
@@ -1311,4 +1341,3 @@ setVirtualBufferContent(buffer_id: number, entries: TextPropertyEntry[]): boolea
 |------|------|-------------|
 | `buffer_id` | `number` | ID of the virtual buffer |
 | `entries` | `TextPropertyEntry[]` | Array of text entries with properties |
-

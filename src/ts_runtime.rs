@@ -47,10 +47,30 @@ use deno_core::{
     extension, op2, FastString, JsRuntime, ModuleLoadResponse, ModuleSource, ModuleSourceCode,
     ModuleSpecifier, ModuleType, OpState, RequestedModuleType, ResolutionKind, RuntimeOptions,
 };
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
+
+/// Layout hints supplied by transforms
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayoutHints {
+    /// Optional compose width
+    pub compose_width: Option<u16>,
+    /// Optional column guides (e.g., for tables)
+    pub column_guides: Option<Vec<u16>>,
+}
+
+/// View transform data stored per buffer (viewport-scoped)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViewTransform {
+    /// Byte range this transform applies to (viewport)
+    pub range: Range<usize>,
+    /// Layout hints
+    pub layout_hints: Option<LayoutHints>,
+}
 
 /// Custom module loader that transpiles TypeScript to JavaScript
 struct TypeScriptModuleLoader;
@@ -148,6 +168,8 @@ struct TsRuntimeState {
     >,
     /// Next request ID for async operations
     next_request_id: Rc<RefCell<u64>>,
+    /// View transforms per buffer (viewport-scoped)
+    view_transforms: HashMap<u32, ViewTransform>,
 }
 
 /// Display a transient message in the editor's status bar
@@ -539,6 +561,35 @@ fn op_fresh_refresh_lines(state: &mut OpState, buffer_id: u32) -> bool {
                 buffer_id: BufferId(buffer_id as usize),
             });
         return result.is_ok();
+    }
+    false
+}
+
+/// Submit a transformed view stream for a viewport
+/// @param buffer_id - Buffer to apply the transform to
+/// @param start - Viewport start byte
+/// @param end - Viewport end byte
+/// @param tokens - Array of tokens with source offsets
+/// @param source_map - Array of source offsets (null for injected)
+/// @param layout_hints - Optional layout hints (compose width, column guides)
+#[op2]
+fn op_fresh_submit_view_transform(
+    state: &mut OpState,
+    buffer_id: u32,
+    start: u32,
+    end: u32,
+    #[serde] layout_hints: Option<LayoutHints>,
+) -> bool {
+    if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+        let mut rs = runtime_state.borrow_mut();
+        rs.view_transforms.insert(
+            buffer_id,
+            ViewTransform {
+                range: start as usize..end as usize,
+                layout_hints,
+            },
+        );
+        return true;
     }
     false
 }
@@ -1924,6 +1975,7 @@ extension!(
         op_fresh_remove_virtual_text,
         op_fresh_remove_virtual_texts_by_prefix,
         op_fresh_clear_virtual_texts,
+        op_fresh_submit_view_transform,
         op_fresh_refresh_lines,
         op_fresh_insert_at_cursor,
         op_fresh_register_command,
@@ -2016,6 +2068,7 @@ impl TypeScriptRuntime {
             event_handlers: event_handlers.clone(),
             pending_responses: Arc::clone(&pending_responses),
             next_request_id: Rc::new(RefCell::new(1)),
+            view_transforms: HashMap::new(),
         }));
 
         let mut js_runtime = JsRuntime::new(RuntimeOptions {
