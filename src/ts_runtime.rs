@@ -1380,14 +1380,23 @@ fn op_fresh_get_env(#[string] name: String) -> Option<String> {
 
 /// Get the editor's current working directory
 ///
-/// Returns the directory from which the editor was launched.
-/// Use as base for resolving relative paths.
+/// Returns the editor's working directory (set when the editor was started).
+/// Use as base for resolving relative paths and spawning processes.
+/// Note: This returns the editor's stored working_dir, not process CWD,
+/// which is important for test isolation.
 #[op2]
 #[string]
-fn op_fresh_get_cwd() -> Result<String, deno_core::error::AnyError> {
+fn op_fresh_get_cwd(state: &mut OpState) -> String {
+    if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+        let runtime_state = runtime_state.borrow();
+        if let Ok(snapshot) = runtime_state.state_snapshot.read() {
+            return snapshot.working_dir.to_string_lossy().to_string();
+        };
+    }
+    // Fallback to process cwd if state not available (should not happen in practice)
     std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
-        .map_err(|e| deno_core::error::generic_error(format!("Failed to get cwd: {}", e)))
+        .unwrap_or_else(|_| ".".to_string())
 }
 
 /// Join path segments using the OS path separator

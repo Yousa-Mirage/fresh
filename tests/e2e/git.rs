@@ -1260,3 +1260,145 @@ fn test_git_log_diff_coloring() {
         "Should show commit info"
     );
 }
+
+/// REPRODUCTION TEST: Opening different commits after closing should open the correct commit
+/// This tests the bug where after opening a commit with Enter, quitting with q, navigating
+/// to a different commit and pressing Enter would open the first commit again instead of
+/// the newly selected one.
+#[test]
+fn test_git_log_open_different_commits_sequentially() {
+    let repo = GitTestRepo::new();
+
+    // Create multiple commits with distinct, identifiable messages
+    repo.create_file("file1.txt", "Content for first file");
+    repo.git_add(&["file1.txt"]);
+    repo.git_commit("FIRST_UNIQUE_COMMIT_AAA");
+
+    repo.create_file("file2.txt", "Content for second file");
+    repo.git_add(&["file2.txt"]);
+    repo.git_commit("SECOND_UNIQUE_COMMIT_BBB");
+
+    repo.create_file("file3.txt", "Content for third file");
+    repo.git_add(&["file3.txt"]);
+    repo.git_commit("THIRD_UNIQUE_COMMIT_CCC");
+
+    repo.setup_git_log_plugin();
+
+    // The harness sets the working directory for the editor, and the plugin
+    // uses editor.getCwd() to get it for git commands - no need to change
+    // process-wide CWD which would cause race conditions in parallel tests.
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        120,
+        40,
+        Config::default(),
+        repo.path.clone(),
+    )
+    .unwrap();
+
+    // Trigger git log
+    trigger_git_log(&mut harness);
+
+    // Wait for git log to load
+    harness
+        .wait_for_async(|h| h.screen_to_string().contains("Commits:"), 3000)
+        .unwrap();
+
+    let screen_log = harness.screen_to_string();
+    println!("Git log with commits:\n{screen_log}");
+
+    // Verify all commits are visible
+    assert!(
+        screen_log.contains("THIRD_UNIQUE_COMMIT_CCC"),
+        "Should show third commit"
+    );
+    assert!(
+        screen_log.contains("SECOND_UNIQUE_COMMIT_BBB"),
+        "Should show second commit"
+    );
+    assert!(
+        screen_log.contains("FIRST_UNIQUE_COMMIT_AAA"),
+        "Should show first commit"
+    );
+
+    // Navigate down to the first commit line (header is line 1, commits start at line 2)
+    // Most recent commit (THIRD) is at the top
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Open the first commit (THIRD_UNIQUE_COMMIT_CCC - most recent)
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // Wait for commit detail
+    let found_first = harness
+        .wait_for_async(
+            |h| {
+                let screen = h.screen_to_string();
+                screen.contains("Author:") && screen.contains("THIRD_UNIQUE_COMMIT_CCC")
+            },
+            3000,
+        )
+        .unwrap();
+
+    let screen_first_detail = harness.screen_to_string();
+    println!("First commit detail (should be THIRD):\n{screen_first_detail}");
+
+    assert!(
+        found_first,
+        "Should show THIRD commit detail. Screen:\n{screen_first_detail}"
+    );
+
+    // Press q to go back to git log
+    harness
+        .send_key(KeyCode::Char('q'), KeyModifiers::NONE)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Wait for git log to reappear
+    harness
+        .wait_for_async(|h| h.screen_to_string().contains("Commits:"), 2000)
+        .unwrap();
+
+    let screen_back_to_log = harness.screen_to_string();
+    println!("Back to git log:\n{screen_back_to_log}");
+
+    // Now navigate DOWN to a DIFFERENT commit (SECOND_UNIQUE_COMMIT_BBB)
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness.process_async_and_render().unwrap();
+
+    let screen_after_nav = harness.screen_to_string();
+    println!("After navigating down:\n{screen_after_nav}");
+
+    // Open the second commit - THIS IS THE BUG: it should open SECOND, not THIRD
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // Wait for commit detail
+    let found_second = harness
+        .wait_for_async(
+            |h| {
+                let screen = h.screen_to_string();
+                screen.contains("Author:")
+            },
+            3000,
+        )
+        .unwrap();
+
+    let screen_second_detail = harness.screen_to_string();
+    println!("Second commit detail (should be SECOND):\n{screen_second_detail}");
+
+    assert!(found_second, "Should show commit detail");
+
+    // CRITICAL ASSERTION: The bug is that it opens the first commit again instead of the second
+    // This should show SECOND_UNIQUE_COMMIT_BBB, NOT THIRD_UNIQUE_COMMIT_CCC
+    assert!(
+        screen_second_detail.contains("SECOND_UNIQUE_COMMIT_BBB"),
+        "BUG: After navigating to a different commit and pressing Enter, it should open SECOND_UNIQUE_COMMIT_BBB, but got:\n{screen_second_detail}"
+    );
+    assert!(
+        !screen_second_detail.contains("THIRD_UNIQUE_COMMIT_CCC"),
+        "BUG: Should NOT show THIRD commit when SECOND was selected:\n{screen_second_detail}"
+    );
+}

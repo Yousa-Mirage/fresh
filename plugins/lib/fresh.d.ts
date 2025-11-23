@@ -646,8 +646,10 @@ interface EditorAPI {
   /**
    * Get the editor's current working directory
    *
-   * Returns the directory from which the editor was launched.
-   * Use as base for resolving relative paths.
+   * Returns the editor's working directory (set when the editor was started).
+   * Use as base for resolving relative paths and spawning processes.
+   * Note: This returns the editor's stored working_dir, not process CWD,
+   * which is important for test isolation.
    */
   getCwd(): string;
 

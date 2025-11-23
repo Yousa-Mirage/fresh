@@ -181,7 +181,8 @@ async function fetchGitLog(): Promise<GitCommit[]> {
     `-n${gitLogState.options.maxCommits}`,
   ];
 
-  const result = await editor.spawnProcess("git", args);
+  const cwd = editor.getCwd();
+  const result = await editor.spawnProcess("git", args, cwd);
 
   if (result.exit_code !== 0) {
     editor.setStatus(`Git log error: ${result.stderr}`);
@@ -216,12 +217,13 @@ async function fetchGitLog(): Promise<GitCommit[]> {
 }
 
 async function fetchCommitDiff(hash: string): Promise<string> {
+  const cwd = editor.getCwd();
   const result = await editor.spawnProcess("git", [
     "show",
     "--stat",
     "--patch",
     hash,
-  ]);
+  ], cwd);
 
   if (result.exit_code !== 0) {
     return `Error fetching diff: ${result.stderr}`;
@@ -849,13 +851,25 @@ globalThis.git_log_refresh = async function(): Promise<void> {
 function getCommitAtCursor(): GitCommit | null {
   if (gitLogState.bufferId === null) return null;
 
-  const cursorLine = editor.getCursorLine();
-  const headerLines = 1;
-  const commitIndex = cursorLine - headerLines;
+  // Use text properties to find which commit the cursor is on
+  // This is more reliable than line number calculation
+  const props = editor.getTextPropertiesAtCursor(gitLogState.bufferId);
 
-  if (commitIndex >= 0 && commitIndex < gitLogState.commits.length) {
-    return gitLogState.commits[commitIndex];
+  if (props.length > 0) {
+    const prop = props[0];
+    // Check if cursor is on a commit line (has type "commit" and index)
+    if (prop.type === "commit" && typeof prop.index === "number") {
+      const index = prop.index as number;
+      if (index >= 0 && index < gitLogState.commits.length) {
+        return gitLogState.commits[index];
+      }
+    }
+    // Also support finding commit by hash (alternative lookup)
+    if (prop.hash && typeof prop.hash === "string") {
+      return gitLogState.commits.find(c => c.hash === prop.hash) || null;
+    }
   }
+
   return null;
 }
 
@@ -988,10 +1002,11 @@ globalThis.git_file_view_close = function(): void {
 
 // Fetch file content at a specific commit
 async function fetchFileAtCommit(commitHash: string, filePath: string): Promise<string | null> {
+  const cwd = editor.getCwd();
   const result = await editor.spawnProcess("git", [
     "show",
     `${commitHash}:${filePath}`,
-  ]);
+  ], cwd);
 
   if (result.exit_code !== 0) {
     return null;

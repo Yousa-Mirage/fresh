@@ -128,6 +128,8 @@ pub struct EditorStateSnapshot {
     pub selected_text: Option<String>,
     /// Internal clipboard content (for plugins that need clipboard access)
     pub clipboard: String,
+    /// Editor's working directory (for file operations and spawning processes)
+    pub working_dir: PathBuf,
 }
 
 impl EditorStateSnapshot {
@@ -143,6 +145,7 @@ impl EditorStateSnapshot {
             buffer_text_properties: HashMap::new(),
             selected_text: None,
             clipboard: String::new(),
+            working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
     }
 }

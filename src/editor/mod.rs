@@ -3689,6 +3689,9 @@ impl Editor {
 
             // Update clipboard (provide internal clipboard content to plugins)
             snapshot.clipboard = self.clipboard.get_internal().to_string();
+
+            // Update working directory (for spawning processes in correct directory)
+            snapshot.working_dir = self.working_dir.clone();
         }
     }
 
