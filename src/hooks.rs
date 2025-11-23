@@ -40,10 +40,10 @@ pub enum HookArgs {
         buffer_id: BufferId,
         position: usize,
         text: String,
-        /// Line number where the insert started (0-based)
-        affected_line_start: usize,
-        /// Line number where the insert ended (0-based, inclusive)
-        affected_line_end: usize,
+        /// Byte position where the affected range starts
+        affected_start: usize,
+        /// Byte position where the affected range ends (after the inserted text)
+        affected_end: usize,
     },
 
     /// Before text is deleted
@@ -57,10 +57,10 @@ pub enum HookArgs {
         buffer_id: BufferId,
         range: Range<usize>,
         deleted_text: String,
-        /// Line number where the delete occurred (0-based)
-        affected_line_start: usize,
-        /// Number of lines that were deleted
-        lines_deleted: usize,
+        /// Byte position where the deletion occurred
+        affected_start: usize,
+        /// Length of the deleted content in bytes
+        deleted_len: usize,
     },
 
     /// Cursor moved to a new position
@@ -416,6 +416,8 @@ mod tests {
                 buffer_id: BufferId(1),
                 position: 0,
                 text: "test".to_string(),
+                affected_start: 0,
+                affected_end: 4,
             },
             HookArgs::BeforeDelete {
                 buffer_id: BufferId(1),
@@ -425,6 +427,8 @@ mod tests {
                 buffer_id: BufferId(1),
                 range: 0..5,
                 deleted_text: "test".to_string(),
+                affected_start: 0,
+                deleted_len: 4,
             },
             HookArgs::CursorMoved {
                 buffer_id: BufferId(1),
