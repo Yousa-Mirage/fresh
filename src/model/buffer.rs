@@ -2426,11 +2426,7 @@ mod tests {
             );
 
             // Check prefix
-            assert_eq!(
-                &saved_content[..7],
-                b"PREFIX_",
-                "Should start with PREFIX_"
-            );
+            assert_eq!(&saved_content[..7], b"PREFIX_", "Should start with PREFIX_");
 
             // Check that first chunk (after prefix) contains A's
             assert!(
@@ -2457,14 +2453,19 @@ mod tests {
             // Create a ~5KB file with numbered lines for easier verification
             let mut content = Vec::new();
             for i in 0..100 {
-                content.extend_from_slice(format!("Line {:04}: padding to make it longer\n", i).as_bytes());
+                content.extend_from_slice(
+                    format!("Line {:04}: padding to make it longer\n", i).as_bytes(),
+                );
             }
             let original_len = content.len();
             std::fs::write(&file_path, &content).unwrap();
 
             // Load as large file (threshold of 500 bytes)
             let mut buffer = TextBuffer::load_from_file(&file_path, 500).unwrap();
-            assert!(buffer.line_count().is_none(), "Should be in large file mode");
+            assert!(
+                buffer.line_count().is_none(),
+                "Should be in large file mode"
+            );
 
             // Edit at the beginning
             buffer.insert_bytes(0, b"[START]".to_vec());
@@ -2481,7 +2482,10 @@ mod tests {
             // Verify
             let saved = std::fs::read_to_string(&save_path).unwrap();
 
-            assert!(saved.starts_with("[START]Line 0000"), "Should start with our edit");
+            assert!(
+                saved.starts_with("[START]Line 0000"),
+                "Should start with our edit"
+            );
             assert!(saved.contains("[MIDDLE]"), "Should contain middle edit");
             assert!(saved.contains("Line 0099"), "Should preserve end of file");
 
