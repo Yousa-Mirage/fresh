@@ -166,20 +166,94 @@ The `source_offset` field is critical—it enables cursor positioning and determ
 
 Plugins can intercept and transform the token stream before it becomes display lines.
 
+#### Synchronization Model
+
+The view transform system uses a **synchronous, single-threaded frame pipeline** to guarantee per-frame coherence:
+
 ```mermaid
 sequenceDiagram
     participant R as Renderer
     participant H as Hook System
     participant P as Plugin
+    participant Q as Command Queue
     participant S as SplitViewState
 
-    R->>H: Fire view_transform_request
+    Note over R: Frame N begins
+    R->>R: build_base_tokens()
+    R->>H: Fire view_transform_request (BLOCKING)
     H->>P: Send buffer_id, viewport, base tokens
-    P->>P: Transform tokens (inject headers, reorder, etc.)
-    P->>S: SubmitViewTransform(transformed tokens)
-    R->>S: Read view_transform
-    R->>R: Use transformed tokens for rendering
+    P->>P: Transform tokens
+    P->>Q: submitViewTransform() enqueues command
+    H-->>R: Hook returns (unblocks)
+    R->>Q: Drain command queue (non-blocking)
+    Q-->>R: SubmitViewTransform command
+    R->>S: view_transform = Some(payload)
+    R->>R: Render using SplitViewState.view_transform
+    Note over R: Frame N complete (coherent)
 ```
+
+| Phase | Operation | Sync/Async | Blocks Frame? |
+|-------|-----------|-----------|---------------|
+| Hook fire | `run_hook("view_transform_request")` | **Sync** | Yes |
+| Plugin execution | Plugin transforms tokens | **Sync** | Yes (in-thread) |
+| Command enqueue | `submitViewTransform()` | Sync | No (mpsc send) |
+| Queue drain | `process_commands()` | Sync | No (try_recv) |
+| State update | `view_state.view_transform = payload` | Sync | No |
+| Render | Read `SplitViewState.view_transform` | Sync | No |
+
+**Key files:**
+- Hook firing: `src/editor/render.rs:135`
+- Command queue: `src/ts_runtime.rs:2996-3002`
+- Queue drain: `src/editor/render.rs:194-200`
+- State update: `src/editor/mod.rs:4209-4226`
+
+#### Frame Coherence Guarantees
+
+The design ensures **frame coherence**—each frame renders with a consistent view of all state:
+
+1. **Hooks block the frame** - `run_hook()` does not return until all plugin callbacks complete
+2. **Commands drain immediately** - After hooks return, pending commands are processed before rendering
+3. **Single source of truth** - `SplitViewState.view_transform` is updated in-place, then read during render
+4. **No async gaps** - No `await` points between state mutation and rendering
+
+```mermaid
+flowchart LR
+    subgraph Frame["Single Frame (No Async Boundaries)"]
+        direction LR
+        A[Build tokens] --> B[Fire hook<br/>BLOCKS]
+        B --> C[Drain queue]
+        C --> D[Apply transforms]
+        D --> E[Render]
+    end
+```
+
+#### Stale Transform Behavior
+
+If a plugin does **not** respond (doesn't call `submitViewTransform`), the renderer uses whatever transform is already in `SplitViewState`:
+
+| Scenario | Behavior |
+|----------|----------|
+| Plugin responds this frame | New transform used immediately |
+| Plugin doesn't respond | Previous frame's transform reused |
+| Plugin calls `ClearViewTransform` | Falls back to base tokens |
+| No plugin registered | Base tokens used (no transform) |
+
+#### Performance Implications
+
+Because hooks are **blocking**, slow plugins stall the entire frame:
+
+```
+Frame timeline (60 FPS target = 16.6ms budget):
+
+Fast plugin:    [tokens 1ms][hook 2ms][drain <1ms][render 5ms] = 8ms ✓
+Slow plugin:    [tokens 1ms][hook 50ms][drain <1ms][render 5ms] = 56ms ✗ (dropped frames)
+```
+
+**Best practices for plugins:**
+- Pre-compute annotation positions during async operations (file load, git commands)
+- Store computed data in plugin state
+- In `view_transform_request`, only do O(viewport) token manipulation
+- Never perform I/O or spawn processes inside the hook
 
 **Hook:** `view_transform_request` (`src/editor/render.rs:113-135`)
 
