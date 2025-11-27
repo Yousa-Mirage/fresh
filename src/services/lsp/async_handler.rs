@@ -360,6 +360,49 @@ struct LspState {
 }
 
 impl LspState {
+    /// Replay pending commands that were queued before initialization
+    async fn replay_pending_commands(
+        &mut self,
+        commands: Vec<LspCommand>,
+        pending: &Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>,
+    ) {
+        if commands.is_empty() {
+            return;
+        }
+        tracing::info!(
+            "Replaying {} pending commands after initialization",
+            commands.len()
+        );
+        for cmd in commands {
+            match cmd {
+                LspCommand::DidOpen {
+                    uri,
+                    text,
+                    language_id,
+                } => {
+                    tracing::info!("Replaying DidOpen for {}", uri.as_str());
+                    let _ = self
+                        .handle_did_open_sequential(uri, text, language_id, pending)
+                        .await;
+                }
+                LspCommand::DidChange {
+                    uri,
+                    content_changes,
+                } => {
+                    tracing::info!("Replaying DidChange for {}", uri.as_str());
+                    let _ = self
+                        .handle_did_change_sequential(uri, content_changes, pending)
+                        .await;
+                }
+                LspCommand::DidSave { uri, text } => {
+                    tracing::info!("Replaying DidSave for {}", uri.as_str());
+                    let _ = self.handle_did_save(uri, text).await;
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Write a message to stdin
     async fn write_message<T: Serialize>(&mut self, message: &T) -> Result<(), String> {
         let json =
@@ -1546,6 +1589,50 @@ impl LspTask {
         })
     }
 
+    /// Spawn the stdout reader task that continuously reads and dispatches LSP messages
+    fn spawn_stdout_reader(
+        mut stdout: BufReader<ChildStdout>,
+        pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>,
+        async_tx: std_mpsc::Sender<AsyncMessage>,
+        language: String,
+        server_response_tx: mpsc::Sender<JsonRpcResponse>,
+    ) {
+        tokio::spawn(async move {
+            tracing::info!("LSP stdout reader task started for {}", language);
+            loop {
+                match read_message_from_stdout(&mut stdout).await {
+                    Ok(message) => {
+                        tracing::debug!("Read message from LSP server: {:?}", message);
+                        if let Err(e) = handle_message_dispatch(
+                            message,
+                            &pending,
+                            &async_tx,
+                            &language,
+                            &server_response_tx,
+                        )
+                        .await
+                        {
+                            tracing::error!("Error handling LSP message: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Error reading from LSP server: {}", e);
+                        let _ = async_tx.send(AsyncMessage::LspStatusUpdate {
+                            language: language.clone(),
+                            status: LspServerStatus::Error,
+                        });
+                        let _ = async_tx.send(AsyncMessage::LspError {
+                            language: language.clone(),
+                            error: format!("Read error: {}", e),
+                        });
+                        break;
+                    }
+                }
+            }
+            tracing::info!("LSP stdout reader task exiting for {}", language);
+        });
+    }
+
     /// Run the task (processes commands and reads from stdout)
     async fn run(self, mut command_rx: mpsc::Receiver<LspCommand>) {
         tracing::info!("LspTask::run() started for language: {}", self.language);
@@ -1562,61 +1649,21 @@ impl LspTask {
             active_requests: HashMap::new(),
         };
 
-        // Move stdout out, share pending
-        let mut stdout = self.stdout;
         let pending = Arc::new(Mutex::new(self.pending));
-
         let async_tx = state.async_tx.clone();
         let language_clone = state.language.clone();
 
         // Create channel for server-to-client request responses
-        // The reader task will send responses through this channel
         let (server_response_tx, mut server_response_rx) = mpsc::channel::<JsonRpcResponse>(100);
 
-        // Spawn stdout reader task - continuously reads and dispatches messages
-        let pending_clone = pending.clone();
-        let async_tx_reader = async_tx.clone();
-        let language_clone_reader = language_clone.clone();
-        tokio::spawn(async move {
-            tracing::info!(
-                "LSP stdout reader task started for {}",
-                language_clone_reader
-            );
-            loop {
-                match read_message_from_stdout(&mut stdout).await {
-                    Ok(message) => {
-                        tracing::debug!("Read message from LSP server: {:?}", message);
-                        if let Err(e) = handle_message_dispatch(
-                            message,
-                            &pending_clone,
-                            &async_tx_reader,
-                            &language_clone_reader,
-                            &server_response_tx,
-                        )
-                        .await
-                        {
-                            tracing::error!("Error handling LSP message: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Error reading from LSP server: {}", e);
-                        let _ = async_tx_reader.send(AsyncMessage::LspStatusUpdate {
-                            language: language_clone_reader.clone(),
-                            status: LspServerStatus::Error,
-                        });
-                        let _ = async_tx_reader.send(AsyncMessage::LspError {
-                            language: language_clone_reader.clone(),
-                            error: format!("Read error: {}", e),
-                        });
-                        break;
-                    }
-                }
-            }
-            tracing::info!(
-                "LSP stdout reader task exiting for {}",
-                language_clone_reader
-            );
-        });
+        // Spawn stdout reader task
+        Self::spawn_stdout_reader(
+            self.stdout,
+            pending.clone(),
+            async_tx.clone(),
+            language_clone.clone(),
+            server_response_tx,
+        );
 
         // Sequential command processing loop with server response handling
         let mut pending_commands = Vec::new();
@@ -1648,58 +1695,7 @@ impl LspTask {
                             // After successful initialization, replay pending commands
                             if success {
                                 let queued = std::mem::take(&mut pending_commands);
-                                if !queued.is_empty() {
-                                    tracing::info!(
-                                        "Replaying {} pending commands after initialization",
-                                        queued.len()
-                                    );
-                                    for queued_cmd in queued {
-                                        match queued_cmd {
-                                            LspCommand::DidOpen {
-                                                uri,
-                                                text,
-                                                language_id,
-                                            } => {
-                                                tracing::info!(
-                                                    "Replaying DidOpen for {}",
-                                                    uri.as_str()
-                                                );
-                                                let _ = state
-                                                    .handle_did_open_sequential(
-                                                        uri,
-                                                        text,
-                                                        language_id,
-                                                        &pending,
-                                                    )
-                                                    .await;
-                                            }
-                                            LspCommand::DidChange {
-                                                uri,
-                                                content_changes,
-                                            } => {
-                                                tracing::info!(
-                                                    "Replaying DidChange for {}",
-                                                    uri.as_str()
-                                                );
-                                                let _ = state
-                                                    .handle_did_change_sequential(
-                                                        uri,
-                                                        content_changes,
-                                                        &pending,
-                                                    )
-                                                    .await;
-                                            }
-                                            LspCommand::DidSave { uri, text } => {
-                                                tracing::info!(
-                                                    "Replaying DidSave for {}",
-                                                    uri.as_str()
-                                                );
-                                                let _ = state.handle_did_save(uri, text).await;
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
+                                state.replay_pending_commands(queued, &pending).await;
                             }
                         }
                         LspCommand::DidOpen {
