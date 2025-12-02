@@ -161,6 +161,16 @@ impl LspManager {
             return self.handles.get_mut(language);
         }
 
+        // Check if language was explicitly disabled by user (via stop command)
+        // Don't auto-spawn disabled languages
+        if self.disabled_languages.contains(language) {
+            tracing::debug!(
+                "LSP for {} is disabled, not spawning (use manual restart to re-enable)",
+                language
+            );
+            return None;
+        }
+
         // Get config for this language
         let config = self.config.get(language)?;
 

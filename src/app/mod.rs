@@ -805,6 +805,25 @@ impl Editor {
         }
     }
 
+    /// Get a list of currently running LSP server languages
+    pub fn running_lsp_servers(&self) -> Vec<String> {
+        self.lsp
+            .as_ref()
+            .map(|lsp| lsp.running_servers())
+            .unwrap_or_default()
+    }
+
+    /// Shutdown an LSP server by language (marks it as disabled until manual restart)
+    ///
+    /// Returns true if the server was found and shutdown, false otherwise
+    pub fn shutdown_lsp_server(&mut self, language: &str) -> bool {
+        if let Some(ref mut lsp) = self.lsp {
+            lsp.shutdown_server(language)
+        } else {
+            false
+        }
+    }
+
     /// Enable event log streaming to a file
     pub fn enable_event_streaming<P: AsRef<Path>>(&mut self, path: P) -> io::Result<()> {
         // Enable streaming for all existing event logs
