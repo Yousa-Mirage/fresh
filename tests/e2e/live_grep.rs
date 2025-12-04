@@ -2,7 +2,6 @@ use crate::common::fixtures::TestFixture;
 use crate::common::harness::EditorTestHarness;
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::fs;
-use std::time::Duration;
 
 /// Test Live Grep plugin - basic search and preview functionality
 #[test]
@@ -43,12 +42,6 @@ fn test_live_grep_basic_search() {
     harness.open_file(&fixture.path).unwrap();
     harness.render().unwrap();
 
-    // Wait for plugins to load
-    for _ in 0..5 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-    }
-
     // Open command palette and find Live Grep
     harness
         .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
@@ -56,15 +49,14 @@ fn test_live_grep_basic_search() {
     harness.render().unwrap();
 
     harness.type_text("Live Grep").unwrap();
-    harness.render().unwrap();
 
-    // Verify command appears in palette
-    let palette_screen = harness.screen_to_string();
-    assert!(
-        palette_screen.contains("Live Grep") || palette_screen.contains("Find in Files"),
-        "Live Grep command should be registered. Got:\n{}",
-        palette_screen
-    );
+    // Wait for Live Grep to appear in palette (plugin loaded)
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            s.contains("Live Grep") || s.contains("Find in Files")
+        })
+        .unwrap();
 
     // Execute the command
     harness
@@ -76,21 +68,13 @@ fn test_live_grep_basic_search() {
     // Type a search query
     harness.type_text("UNIQUE_MARKER").unwrap();
 
-    // Wait for search results
-    for _ in 0..10 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(100));
-    }
-
-    let search_screen = harness.screen_to_string();
-    println!("Screen after search:\n{}", search_screen);
-
-    // Verify we see search results (the file containing UNIQUE_MARKER should appear)
-    assert!(
-        search_screen.contains("test.rs") || search_screen.contains("UNIQUE_MARKER"),
-        "Search results should show the file containing UNIQUE_MARKER. Got:\n{}",
-        search_screen
-    );
+    // Wait for search results to appear
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            s.contains("test.rs") || s.contains("UNIQUE_MARKER")
+        })
+        .unwrap();
 
     // Press Escape to cancel
     harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
@@ -139,18 +123,18 @@ fn test_live_grep_select_result() {
     harness.open_file(&fixture.path).unwrap();
     harness.render().unwrap();
 
-    // Wait for plugins to load
-    for _ in 0..5 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-    }
-
-    // Start Live Grep
+    // Start Live Grep via command palette
     harness
         .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
         .unwrap();
     harness.render().unwrap();
     harness.type_text("Live Grep").unwrap();
+
+    // Wait for Live Grep command to appear (plugin loaded)
+    harness
+        .wait_until(|h| h.screen_to_string().contains("Live Grep"))
+        .unwrap();
+
     harness
         .send_key(KeyCode::Enter, KeyModifiers::NONE)
         .unwrap();
@@ -159,32 +143,26 @@ fn test_live_grep_select_result() {
     // Search for the target
     harness.type_text("TARGET_FILE").unwrap();
 
-    // Wait for results
-    for _ in 0..10 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    // Wait for results to appear
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            s.contains("target.rs") || s.contains("TARGET_FILE")
+        })
+        .unwrap();
 
     // Press Enter to select the result
     harness
         .send_key(KeyCode::Enter, KeyModifiers::NONE)
         .unwrap();
 
-    // Wait for file to open
-    for _ in 0..5 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-    }
-
-    let final_screen = harness.screen_to_string();
-    println!("Screen after selecting result:\n{}", final_screen);
-
-    // Verify the target file was opened
-    assert!(
-        final_screen.contains("TARGET_FILE") || final_screen.contains("target_function"),
-        "Target file should be opened after selecting result. Got:\n{}",
-        final_screen
-    );
+    // Wait for target file to open
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            s.contains("TARGET_FILE") || s.contains("target_function")
+        })
+        .unwrap();
 }
 
 /// Test Live Grep - preview split appears and closes on ESC
@@ -220,18 +198,18 @@ fn test_live_grep_preview_split() {
     harness.open_file(&fixture.path).unwrap();
     harness.render().unwrap();
 
-    // Wait for plugins to load
-    for _ in 0..5 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-    }
-
-    // Start Live Grep
+    // Start Live Grep via command palette
     harness
         .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
         .unwrap();
     harness.render().unwrap();
     harness.type_text("Live Grep").unwrap();
+
+    // Wait for Live Grep command to appear (plugin loaded)
+    harness
+        .wait_until(|h| h.screen_to_string().contains("Live Grep"))
+        .unwrap();
+
     harness
         .send_key(KeyCode::Enter, KeyModifiers::NONE)
         .unwrap();
@@ -240,41 +218,21 @@ fn test_live_grep_preview_split() {
     // Search for content
     harness.type_text("PREVIEW_TEST").unwrap();
 
-    // Wait for results and preview to appear
-    for _ in 0..15 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(100));
-    }
-
-    let preview_screen = harness.screen_to_string();
-    println!("Screen with preview:\n{}", preview_screen);
-
-    // Verify preview split appears (should show *Preview* or preview content)
-    assert!(
-        preview_screen.contains("*Preview*") || preview_screen.contains("PREVIEW_TEST_CONTENT"),
-        "Preview split should appear with search results. Got:\n{}",
-        preview_screen
-    );
+    // Wait for preview split to appear
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            s.contains("*Preview*") || s.contains("PREVIEW_TEST_CONTENT")
+        })
+        .unwrap();
 
     // Press ESC to cancel
     harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
 
-    // Wait for cleanup
-    for _ in 0..5 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-    }
-
-    let after_esc_screen = harness.screen_to_string();
-    println!("Screen after ESC:\n{}", after_esc_screen);
-
-    // Verify preview split is closed (no more *Preview* visible)
-    // and we're back to single pane with main file
-    assert!(
-        !after_esc_screen.contains("*Preview*"),
-        "Preview split should be closed after ESC. Got:\n{}",
-        after_esc_screen
-    );
+    // Wait for preview split to close
+    harness
+        .wait_until(|h| !h.screen_to_string().contains("*Preview*"))
+        .unwrap();
 }
 
 /// Test Live Grep - input is preserved when navigating results
@@ -312,18 +270,18 @@ fn test_live_grep_input_preserved() {
     harness.open_file(&fixture.path).unwrap();
     harness.render().unwrap();
 
-    // Wait for plugins to load
-    for _ in 0..5 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-    }
-
-    // Start Live Grep
+    // Start Live Grep via command palette
     harness
         .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
         .unwrap();
     harness.render().unwrap();
     harness.type_text("Live Grep").unwrap();
+
+    // Wait for Live Grep command to appear (plugin loaded)
+    harness
+        .wait_until(|h| h.screen_to_string().contains("Live Grep"))
+        .unwrap();
+
     harness
         .send_key(KeyCode::Enter, KeyModifiers::NONE)
         .unwrap();
@@ -332,11 +290,13 @@ fn test_live_grep_input_preserved() {
     // Type search query
     harness.type_text("MULTI_MATCH").unwrap();
 
-    // Wait for results
-    for _ in 0..10 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    // Wait for results to appear
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            s.contains("file1.txt") || s.contains("MULTI_MATCH")
+        })
+        .unwrap();
 
     // Navigate down through results
     harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
